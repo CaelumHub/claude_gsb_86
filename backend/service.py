@@ -33,6 +33,7 @@ try:
         jaccard_similarity,
         louvain,
         pagerank,
+        reachability_stats,
         shortest_path,
     )
     from .graph import Graph
@@ -50,6 +51,7 @@ except ImportError:  # pragma: no cover
         jaccard_similarity,
         louvain,
         pagerank,
+        reachability_stats,
         shortest_path,
     )
     from graph import Graph
@@ -71,6 +73,7 @@ class SocialGraphService:
         self._community_cache: Optional[dict] = None
         self._pagerank_cache: Optional[Dict[int, float]] = None
         self._rec_cache: Dict[int, dict] = self.derived.load_recommendations()
+        self._reach_cache: Dict[Tuple[int, int], dict] = {}
         self._community_dirty = False
         self._pagerank_dirty = False
 
@@ -86,6 +89,7 @@ class SocialGraphService:
                 # Graph changed -> derived results are stale.
                 self._community_dirty = True
                 self._pagerank_dirty = True
+                self._reach_cache.clear()
             return self._graph
 
     def invalidate_graph(self) -> None:
@@ -94,6 +98,7 @@ class SocialGraphService:
             self._graph_dirty = True
             self._community_dirty = False
             self._pagerank_dirty = True
+            self._reach_cache.clear()
 
     def graph_stats(self) -> dict:
         graph = self.get_graph()
@@ -345,6 +350,37 @@ class SocialGraphService:
             "jaccard": round(jaccard_similarity(graph, u, v), 6),
             "adamic_adar": round(adamic_adar(graph, u, v), 6),
         }
+
+    # ------------------------------------------------------------------
+    # Reachability (layered BFS coverage)
+    # ------------------------------------------------------------------
+    def reachability(self, uid: int, hops: int) -> Optional[dict]:
+        """Layered-BFS coverage stats for ``uid`` within ``hops`` hops.
+
+        Traversal (:func:`algorithms.bfs_layers`) and statistics
+        (:func:`algorithms.reachability_stats`) are pure functions of the
+        frozen graph, so results are cached per ``(user, hops)`` and reused
+        until the graph changes.  Returns ``None`` when the user is not in
+        the graph (the API maps that to 404).
+        """
+        graph = self.get_graph()
+        if not graph.has_node(uid):
+            return None
+        hops = min(max(hops, 1), config.REACHABILITY_MAX_HOPS)
+        key = (uid, hops)
+        with self._lock:
+            cached = self._reach_cache.get(key)
+        if cached is not None:
+            return cached
+        with config.Timed() as timer:
+            result = reachability_stats(graph, uid, hops)
+        result["time_ms"] = round(timer.elapsed_ms, 2)
+        with self._lock:
+            if len(self._reach_cache) >= config.REACHABILITY_CACHE_MAX:
+                # FIFO eviction keeps the cache memory-bounded.
+                self._reach_cache.pop(next(iter(self._reach_cache)))
+            self._reach_cache[key] = result
+        return result
 
     # ------------------------------------------------------------------
     # Community / pagerank (cached)

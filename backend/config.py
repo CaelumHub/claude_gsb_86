@@ -74,6 +74,11 @@ NEIGHBORHOOD_DEFAULT_DEPTH = 2
 NEIGHBORHOOD_MAX_DEPTH = 6
 NEIGHBORHOOD_SAMPLE_LIMIT = 2_000        # max nodes returned for a subgraph view
 
+# Reachability (layered BFS coverage)
+REACHABILITY_DEFAULT_HOPS = 3
+REACHABILITY_MAX_HOPS = 12               # API clamp on the hop limit
+REACHABILITY_CACHE_MAX = 64              # cached (source, hops) stats entries
+
 PAGERANK_DAMPING = 0.85
 PAGERANK_TOLERANCE = 1e-8
 PAGERANK_MAX_ITER = 200

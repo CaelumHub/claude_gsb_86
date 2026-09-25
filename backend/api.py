@@ -23,6 +23,7 @@ Endpoint summary (all under ``/api``):
     GET    /api/graph/neighborhood    ?node&depth&limit
     GET    /api/path                  ?source&target&algorithm
     GET    /api/common-friends        ?source&target
+    GET    /api/reachability          ?source&hops
     GET    /api/community             (cached)
     POST   /api/community/compute     {resolution?}
     GET    /api/pagerank              ?top&refresh
@@ -267,6 +268,17 @@ class ApiRouter:
             info = self.service.common_friends_info(source, target)
             info["source"], info["target"] = target, source
             return 200, info
+
+        # --- reachability (layered BFS coverage) ---
+        if route == "/reachability" and method == "GET":
+            source = _to_int(query.get("source"), -1)
+            hops = _to_int(query.get("hops"), config.REACHABILITY_DEFAULT_HOPS)
+            if source < 0:
+                return _error("缺少 source 参数")
+            result = self.service.reachability(source, hops)
+            if result is None:
+                return _error("用户不存在", 404)
+            return 200, result
 
         # --- community ---
         if route == "/community" and method == "GET":

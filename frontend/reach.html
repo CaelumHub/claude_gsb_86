@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>可达性分析 · 社交网络图分析</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <div id="app">
+    <aside id="sidebar"></aside>
+    <main id="main">
+      <header id="topbar"></header>
+      <section id="content">
+        <div class="page-head">
+          <div>
+            <h1>可达性分析</h1>
+            <p class="desc">从指定用户出发逐层广度遍历（BFS），统计每一跳新增多少节点、累计覆盖多大；图不连通时明确提示。</p>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="row wrap">
+            <div class="field-group" style="flex:1;min-width:140px;margin-bottom:0">
+              <label class="field">起始用户 ID</label>
+              <input class="input" id="src" type="number" placeholder="如 1">
+            </div>
+            <div class="field-group" style="flex:1;min-width:140px;margin-bottom:0">
+              <label class="field">跳数上限</label>
+              <input class="input" id="hops" type="number" min="1" max="12" placeholder="如 3">
+            </div>
+            <div class="field-group" style="margin-bottom:0;align-self:flex-end">
+              <button class="btn btn-primary btn-lg" id="btnQuery">分析</button>
+            </div>
+          </div>
+        </div>
+
+        <div id="banner" class="mt-16"></div>
+
+        <div class="grid cols-4 mt-16" id="tiles"></div>
+
+        <div class="card mt-16">
+          <div class="card-head">
+            <div class="card-title">逐层覆盖 <span class="sub" id="layerMeta"></span></div>
+            <div class="row">
+              <button class="btn btn-sm" id="btnBar">条形图</button>
+              <button class="btn btn-sm" id="btnList">逐层列表</button>
+            </div>
+          </div>
+          <div id="layerView"></div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script src="js/api.js"></script>
+  <script src="js/common.js"></script>
+  <script>
+    const C = common;
+    // 统计结果只获取一次，条形图 / 逐层列表两个视图共用同一份数据（遍历与展示分离）。
+    const state = { result: null, view: "bar" };
+    const MAX_BADGES = 120; // 单层节点徽章展示上限，超出折叠为计数
+
+    function query() {
+      const src = parseInt(document.getElementById("src").value, 10);
+      const hops = parseInt(document.getElementById("hops").value, 10);
+      if (isNaN(src)) { C.toast("请输入起始用户 ID", "warning"); return; }
+      if (isNaN(hops) || hops < 1) { C.toast("请输入有效的跳数上限（≥1）", "warning"); return; }
+      const view = document.getElementById("layerView");
+      view.innerHTML = C.spinner();
+      api.reachability(src, hops).then((r) => {
+        state.result = r;
+        renderAll();
+      }).catch((e) => {
+        state.result = null;
+        document.getElementById("banner").innerHTML = "";
+        document.getElementById("tiles").innerHTML = "";
+        document.getElementById("layerMeta").textContent = "";
+        view.innerHTML = C.emptyState("⚠", e.message);
+      });
+    }
+
+    function renderAll() {
+      renderBanner();
+      renderTiles();
+      renderView();
+    }
+
+    // 连通性 / 跳数不足 / 全覆盖 三种结论的明确提示
+    function renderBanner() {
+      const box = document.getElementById("banner");
+      const r = state.result;
+      if (!r) { box.innerHTML = ""; return; }
+      let cls, label, text;
+      if (!r.connected) {
+        // 图不连通：存在任何跳数下都不可达的节点
+        cls = "danger";
+        label = "图不连通";
+        text = "⚠ 从用户 " + r.source + " 出发，" + r.max_depth + " 跳内到达 " + C.fmt(r.reachable) +
+          " / " + C.fmt(r.total_nodes) + " 个节点。起点所在连通分量共 " + C.fmt(r.component_size) +
+          " 个节点" + (r.component_covered
+            ? "（跳数内已全覆盖）"
+            : "（跳数内仅覆盖其中 " + C.fmt(r.reachable) + " 个）") +
+          "；其余 " + C.fmt(r.total_nodes - r.component_size) +
+          " 个节点位于其他连通分量，任何跳数下都不可达。";
+      } else if (!r.component_covered) {
+        // 图连通，但跳数上限截断了覆盖
+        cls = "warning";
+        label = "跳数上限不足";
+        text = "图是连通的，但 " + r.max_depth + " 跳内仅覆盖 " + C.fmt(r.reachable) + " / " +
+          C.fmt(r.total_nodes) + " 个节点；从该起点覆盖全图最远需要 " + r.component_eccentricity +
+          " 跳，请增大跳数上限。";
+      } else {
+        cls = "success";
+        label = "覆盖完整";
+        text = "✓ " + r.max_depth + " 跳内覆盖整个连通分量（共 " + C.fmt(r.component_size) +
+          " 个节点，即全图），实际用满 " + r.depth_reached + " 跳。";
+      }
+      box.innerHTML =
+        '<div class="card" style="border-left:4px solid var(--' + cls + ')">' +
+        '<span class="badge ' + cls + '">' + label + "</span>" +
+        '<div class="mt-8">' + text + "</div></div>";
+    }
+
+    function renderTiles() {
+      const r = state.result;
+      if (!r) { document.getElementById("tiles").innerHTML = ""; return; }
+      const tiles = [
+        { label: "可达节点", value: C.fmt(r.reachable), hint: r.max_depth + " 跳内累计" },
+        { label: "全图节点", value: C.fmt(r.total_nodes), hint: "起点所在分量 " + C.fmt(r.component_size) + " 个" },
+        { label: "覆盖率", value: C.fmtPct(r.total_nodes ? r.reachable / r.total_nodes : 0), hint: "不可达 " + C.fmt(r.unreachable) + " 个" },
+        { label: "实际跳数", value: C.fmt(r.depth_reached), hint: "上限 " + r.max_depth + " 跳 · 耗时 " + C.fmtMs(r.time_ms || 0) },
+      ];
+      document.getElementById("tiles").innerHTML = tiles.map((t) =>
+        '<div class="card stat-tile"><div class="label">' + t.label + '</div><div class="value">' +
+        t.value + '</div><div class="hint">' + t.hint + "</div></div>"
+      ).join("");
+    }
+
+    function renderView() {
+      const view = document.getElementById("layerView");
+      const r = state.result;
+      if (!r) { view.innerHTML = C.emptyState("🧭", "输入起始用户与跳数上限后开始分析"); return; }
+      document.getElementById("layerMeta").textContent =
+        "用户 " + r.source + " · " + r.max_depth + " 跳上限";
+      view.innerHTML = state.view === "bar" ? renderBar(r) : renderList(r);
+    }
+
+    // 条形图：每跳新增节点数，附累计值
+    function renderBar(r) {
+      const layers = r.layers || [];
+      if (!layers.length) return C.emptyState("🗂", "无数据");
+      const maxNew = Math.max.apply(null, layers.map((l) => l.new).concat([1]));
+      return layers.map((l) =>
+        '<div class="bar-row"><span class="bar-label">第 ' + l.depth + " 跳</span>" +
+        '<span class="bar-track"><span class="bar-fill" style="width:' +
+          (l.new / maxNew * 100).toFixed(1) + "%;background:" + C.colorFor(l.depth) + '"></span></span>' +
+        '<span class="bar-val" style="width:auto;min-width:120px">+' + l.new +
+          " · 累计 " + l.cumulative + "</span></div>"
+      ).join("");
+    }
+
+    // 逐层列表：每层新增 / 累计 / 覆盖率 + 该层节点
+    function renderList(r) {
+      const layers = r.layers || [];
+      if (!layers.length) return C.emptyState("🗂", "无数据");
+      return layers.map((l) => {
+        const shown = l.nodes.slice(0, MAX_BADGES);
+        let badges = shown.map((n) => '<span class="badge brand">' + n + "</span>").join(" ");
+        if (l.nodes.length > shown.length) {
+          badges += ' <span class="badge">… 共 ' + l.nodes.length + " 个</span>";
+        }
+        return '<div style="padding:10px 0;border-bottom:1px solid var(--border)">' +
+          '<div class="row spread mb-8"><strong>第 ' + l.depth + " 跳</strong>" +
+          '<span class="muted small">新增 ' + l.new + " · 累计 " + l.cumulative +
+          " · 覆盖率 " + C.fmtPct(l.coverage) + "</span></div>" +
+          '<div class="row wrap" style="gap:6px">' + badges + "</div></div>";
+      }).join("");
+    }
+
+    function setView(v) {
+      state.view = v;
+      document.getElementById("btnBar").className = "btn btn-sm" + (v === "bar" ? " btn-primary" : "");
+      document.getElementById("btnList").className = "btn btn-sm" + (v === "list" ? " btn-primary" : "");
+      renderView();
+    }
+
+    C.initPage("reach", function () {
+      document.getElementById("btnQuery").addEventListener("click", query);
+      document.getElementById("btnBar").addEventListener("click", () => setView("bar"));
+      document.getElementById("btnList").addEventListener("click", () => setView("list"));
+      document.getElementById("src").addEventListener("keyup", (e) => { if (e.key === "Enter") query(); });
+      document.getElementById("hops").addEventListener("keyup", (e) => { if (e.key === "Enter") query(); });
+      // 默认示例
+      document.getElementById("src").value = 1;
+      document.getElementById("hops").value = 3;
+      setView("bar");
+      query();
+    });
+  </script>
+</body>
+</html>

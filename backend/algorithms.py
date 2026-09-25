@@ -5,6 +5,7 @@ Graph algorithms implemented for **memory-efficient, large-scale execution**.
 
 * ``bfs_shortest_path``          -- classic unweighted BFS with parent tracking
 * ``bidirectional_shortest_path`` -- meets-in-the-middle, much faster on big graphs
+* ``bfs_layers`` / ``reachability_stats`` -- layered BFS coverage statistics
 * ``pagerank``                   -- power iteration over CSR with dangling-node fix
 * ``louvain``                    -- two-phase modularity optimisation w/ early stop
 * ``recommend_*``                -- collaborative filtering + embedding + cold start
@@ -172,6 +173,102 @@ def shortest_path(
         return path, dist, "bidirectional"
     path, dist = bfs_shortest_path(graph, source, target)
     return path, dist, "bfs"
+
+
+# ===========================================================================
+# Layered BFS / reachability coverage
+# ===========================================================================
+def bfs_layers(
+    graph: Graph,
+    source: int,
+    max_depth: int,
+) -> List[List[int]]:
+    """Layer-by-layer BFS from ``source``, bounded by ``max_depth`` hops.
+
+    Returns ``layers`` where ``layers[d]`` holds every node whose shortest
+    distance from ``source`` is exactly ``d`` (``layers[0] == [source]``).
+
+    A single global ``visited`` set guarantees each node enters exactly one
+    layer, so per-layer counts never double-count and cumulative sums are
+    exact.  Layers are sorted by node id, making the output stable and
+    reproducible regardless of neighbour iteration order.
+    """
+    if max_depth < 0 or not graph.has_node(source):
+        return []
+    visited: Set[int] = {source}
+    layers: List[List[int]] = [[source]]
+    frontier = [source]
+    for _ in range(max_depth):
+        if not frontier:
+            break
+        nxt: List[int] = []
+        for node in frontier:
+            for nb in graph.neighbors(node):
+                if nb not in visited:
+                    visited.add(nb)
+                    nxt.append(nb)
+        if not nxt:
+            break
+        nxt.sort()
+        layers.append(nxt)
+        frontier = nxt
+    return layers
+
+
+def reachability_stats(
+    graph: Graph,
+    source: int,
+    max_depth: int,
+) -> Dict[str, object]:
+    """Coverage statistics on top of :func:`bfs_layers` -- no presentation.
+
+    Computes per-hop *new* node counts, cumulative coverage and coverage
+    ratios within ``max_depth`` hops, plus connectivity diagnostics from a
+    second, unbounded layered BFS over the source's connected component:
+
+    * ``connected``          -- False when the component does not span the
+      whole graph (some nodes are unreachable at *any* hop limit);
+    * ``component_covered``  -- False when the hop limit, not disconnectivity,
+      is what leaves component nodes unreached.
+
+    The result is a plain JSON-serialisable dict that callers can cache and
+    reuse for any rendering (layer list, bar chart, ...).
+    """
+    total = graph.node_count
+    layers = bfs_layers(graph, source, max_depth)
+
+    cumulative = 0
+    layer_stats: List[Dict[str, object]] = []
+    for depth, nodes in enumerate(layers):
+        cumulative += len(nodes)
+        layer_stats.append({
+            "depth": depth,
+            "new": len(nodes),
+            "cumulative": cumulative,
+            "coverage": (cumulative / total) if total else 0.0,
+            "nodes": nodes,
+        })
+
+    # Unbounded pass: size and eccentricity of the source's component.  A
+    # shortest path never exceeds ``total - 1`` hops, so ``total`` is a safe
+    # "infinite" depth bound.
+    component_layers = bfs_layers(graph, source, max(total, 1))
+    component_size = sum(len(layer) for layer in component_layers)
+
+    reachable = cumulative
+    return {
+        "source": source,
+        "max_depth": max_depth,
+        "layers": layer_stats,
+        "reachable": reachable,
+        "total_nodes": total,
+        "unreachable": total - reachable,
+        "depth_reached": len(layers) - 1,
+        "component_size": component_size,
+        "component_eccentricity": len(component_layers) - 1,
+        "component_covered": reachable >= component_size,
+        "connected": component_size == total,
+    }
 
 
 # ===========================================================================

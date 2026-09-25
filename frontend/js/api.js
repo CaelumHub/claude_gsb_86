@@ -77,6 +77,10 @@
     commonFriends: (source, target) =>
       request("GET", "/api/common-friends" + qs({ source, target })),
 
+    // 可达性（逐层 BFS 覆盖统计）
+    reachability: (source, hops) =>
+      request("GET", "/api/reachability" + qs({ source, hops })),
+
     // 社群 / PageRank
     community: () => request("GET", "/api/community"),
     computeCommunity: (resolution) => request("POST", "/api/community/compute", { resolution }),

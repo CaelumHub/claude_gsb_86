@@ -57,7 +57,29 @@ def _check() -> int:
     rec = algorithms.hybrid_recommend(g, 1, k=3)
     assert "items" in rec
 
-    print("[check] OK: graph, bfs, pagerank, louvain, recommend all pass")
+    # Layered BFS on the barbell from node 1: layers are exact and disjoint.
+    layers = algorithms.bfs_layers(g, 1, 6)
+    assert layers == [[1], [2, 3], [4], [5, 6]], layers
+    flat = [n for layer in layers for n in layer]
+    assert len(flat) == len(set(flat)) == 6  # no double counting
+
+    stats = algorithms.reachability_stats(g, 1, 2)
+    assert [l["new"] for l in stats["layers"]] == [1, 2, 1], stats["layers"]
+    assert [l["cumulative"] for l in stats["layers"]] == [1, 3, 4]
+    assert stats["reachable"] == 4 and stats["total_nodes"] == 6
+    assert stats["connected"] is True and stats["component_covered"] is False
+
+    # Disconnected graph: two components must be flagged as such.
+    g2 = Graph(directed=False)
+    g2.add_edge(1, 2)
+    g2.add_edge(3, 4)
+    g2.freeze()
+    stats2 = algorithms.reachability_stats(g2, 1, 5)
+    assert stats2["connected"] is False
+    assert stats2["component_size"] == 2 and stats2["unreachable"] == 2
+    assert stats2["component_covered"] is True  # limit not the cause
+
+    print("[check] OK: graph, bfs, reachability, pagerank, louvain, recommend all pass")
     return 0
 
 
