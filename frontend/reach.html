@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>可达性分析 · 社交网络图分析</title>
+  <link rel="stylesheet" href="css/style.css">
+  <style>
+    /* 连通性 / 截断提示横幅（本页专用，沿用设计系统的语义色） */
+    .notice {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      padding: 12px 14px;
+      border-radius: 10px;
+      font-size: 13.5px;
+      line-height: 1.6;
+      border: 1px solid transparent;
+    }
+    .notice .notice-ico { font-size: 17px; line-height: 1.4; }
+    .notice.warning { background: var(--warning-soft); color: var(--warning); border-color: var(--warning); }
+    .notice.danger  { background: var(--danger-soft);  color: var(--danger);  border-color: var(--danger); }
+    .notice.info    { background: var(--info-soft);    color: var(--info);    border-color: var(--info); }
+    .notice strong  { font-weight: 700; }
+    .layer-nodes { display: flex; flex-wrap: wrap; gap: 6px; }
+    .layer-nodes .node-chip {
+      display: inline-flex;
+      align-items: baseline;
+      gap: 5px;
+      padding: 2px 9px;
+      border-radius: 999px;
+      background: var(--bg-inset);
+      border: 1px solid var(--border);
+      font-size: 12px;
+    }
+    .layer-nodes .node-chip .nid { font-family: var(--mono); font-weight: 600; color: var(--brand-strong, var(--brand)); }
+    .layer-nodes .node-chip .nname { color: var(--text-muted); }
+    .layer-nodes .more-chip { font-size: 12px; color: var(--text-faint); align-self: center; }
+    .bar-row.reach .bar-label { width: 64px; }
+  </style>
+</head>
+<body>
+  <div id="app">
+    <aside id="sidebar"></aside>
+    <main id="main">
+      <header id="topbar"></header>
+      <section id="content">
+        <div class="page-head">
+          <div>
+            <h1>可达性分析</h1>
+            <p class="desc">从指定用户出发做逐层广度遍历（BFS），统计每一跳新增节点与累计覆盖；同一节点只计入首次到达的层，结果稳定可复现。</p>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="row wrap">
+            <div class="field-group" style="flex:1;min-width:180px;margin-bottom:0">
+              <label class="field">起始用户 ID</label>
+              <input class="input" id="src" type="number" min="1" placeholder="如 1">
+            </div>
+            <div class="field-group" style="min-width:180px;margin-bottom:0">
+              <label class="field">跳数上限（1–12）</label>
+              <input class="input" id="hops" type="number" min="1" max="12" placeholder="如 3">
+            </div>
+            <div class="field-group" style="margin-bottom:0;align-self:flex-end">
+              <button class="btn btn-primary btn-lg" id="btnQuery">开始分析</button>
+            </div>
+          </div>
+        </div>
+
+        <div id="noticeBox" class="mt-16"></div>
+
+        <div class="grid cols-4 mt-16" id="tiles"></div>
+
+        <div class="grid cols-2 mt-16">
+          <div class="card">
+            <div class="card-head">
+              <div class="card-title">每一跳新增节点</div>
+              <span class="badge brand" id="newMeta"></span>
+            </div>
+            <div id="newChart" class="card-body"></div>
+          </div>
+          <div class="card">
+            <div class="card-head">
+              <div class="card-title">累计覆盖</div>
+              <span class="badge" id="cumMeta"></span>
+            </div>
+            <div id="cumChart" class="card-body"></div>
+          </div>
+        </div>
+
+        <div class="card mt-16">
+          <div class="card-head">
+            <div class="card-title">逐层明细</div>
+            <span class="badge" id="layerMeta"></span>
+          </div>
+          <div id="layerTable" class="card-body"></div>
+        </div>
+
+        <div class="card mt-16">
+          <div class="card-head">
+            <div class="card-title">各层节点列表</div>
+            <span class="badge info">每层最多展示 200 个</span>
+          </div>
+          <div id="layerNodes" class="card-body"></div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script src="js/api.js"></script>
+  <script src="js/common.js"></script>
+  <script>
+    const C = common;
+
+    function query() {
+      const src = parseInt(document.getElementById("src").value, 10);
+      let hops = parseInt(document.getElementById("hops").value, 10);
+      if (isNaN(src) || src < 1) { C.toast("请输入有效的起始用户 ID", "warning"); return; }
+      if (isNaN(hops) || hops < 1) hops = 3;
+      hops = Math.min(hops, 12);
+
+      for (const id of ["newChart", "cumChart", "layerTable", "layerNodes"]) {
+        document.getElementById(id).innerHTML = C.spinner();
+      }
+      document.getElementById("noticeBox").innerHTML = "";
+
+      api.reachability(src, hops).then(render).catch((e) => {
+        document.getElementById("noticeBox").innerHTML =
+          '<div class="notice danger"><span class="notice-ico">🚫</span><div>' + C.escapeHtml(e.message) + "</div></div>";
+        for (const id of ["tiles", "newChart", "cumChart", "layerTable", "layerNodes"]) {
+          document.getElementById(id).innerHTML = "";
+        }
+        C.toast(e.message, "error");
+      });
+    }
+
+    function render(r) {
+      renderNotice(r);
+      renderTiles(r);
+      renderCharts(r);
+      renderTable(r);
+      renderLayerNodes(r);
+    }
+
+    function renderNotice(r) {
+      const box = document.getElementById("noticeBox");
+      const parts = [];
+      if (r.disconnected) {
+        parts.push(
+          '<div class="notice danger"><span class="notice-ico">⚠️</span><div>' +
+          "<strong>图不连通：</strong>从用户 <strong>" + r.source + "</strong> 出发只能到达所在连通分量的 " +
+          C.fmt(r.component_size) + " / " + C.fmt(r.total_nodes) + " 个节点，另有 <strong>" +
+          C.fmt(r.unreachable_total) + "</strong> 个节点位于其他连通分量（含孤立节点），任何跳数内都无法到达。</div></div>"
+        );
+      } else {
+        parts.push(
+          '<div class="notice info"><span class="notice-ico">🔗</span><div>图连通：用户 <strong>' +
+          r.source + "</strong> 所在连通分量覆盖全部 " + C.fmt(r.total_nodes) + " 个节点。</div></div>"
+        );
+      }
+      if (r.truncated) {
+        parts.push(
+          '<div class="notice warning"><span class="notice-ico">🛑</span><div>' +
+          "<strong>达到跳数上限：</strong>" + r.max_hops + " 跳内新增覆盖到第 " + r.hops_explored +
+          " 层后仍有未遍历节点，同一连通分量中还有 <strong>" + C.fmt(r.unreachable_within_hops) +
+          "</strong> 个节点需要更多跳数（分量内最远 " + r.eccentricity + " 跳）。可增大跳数上限继续查看。</div></div>"
+        );
+      }
+      box.innerHTML = parts.join("");
+    }
+
+    function renderTiles(r) {
+      const reachPct = r.total_nodes ? (r.reachable_within_hops / r.total_nodes) : 0;
+      const tiles = [
+        { label: "跳数内可达节点", value: C.fmt(r.reachable_within_hops), hint: "上限 " + r.max_hops + " 跳 · 含起点" },
+        { label: "占全图比例", value: (reachPct * 100).toFixed(1) + "%", hint: C.fmt(r.total_nodes) + " 个节点" },
+        { label: "所在连通分量", value: C.fmt(r.component_size), hint: r.disconnected ? "图不连通" : "全图连通" },
+        { label: "不可达节点", value: C.fmt(r.unreachable_total),
+          hint: "其他分量 " + C.fmt(r.unreachable_total) + (r.truncated ? " · 跳数外 " + C.fmt(r.unreachable_within_hops) : "") },
+      ];
+      document.getElementById("tiles").innerHTML = tiles.map((t) =>
+        '<div class="card stat-tile"><div class="label">' + t.label + '</div><div class="value">' + t.value + '</div><div class="hint">' + t.hint + "</div></div>"
+      ).join("");
+    }
+
+    function barRow(label, value, max, colorClass, suffix) {
+      const width = max > 0 ? (value / max * 100).toFixed(1) : 0;
+      return '<div class="bar-row reach"><span class="bar-label">' + label + '</span>' +
+        '<span class="bar-track"><span class="bar-fill ' + (colorClass || "") + '" style="width:' + width + '%"></span></span>' +
+        '<span class="bar-val">' + C.fmt(value) + (suffix || "") + "</span></div>";
+    }
+
+    function renderCharts(r) {
+      const layers = r.layers;
+      const maxNew = Math.max.apply(null, layers.map((l) => l.new_nodes).concat([1]));
+      const newBox = document.getElementById("newChart");
+      newBox.innerHTML = layers.map((l, i) =>
+        barRow(l.hop === 0 ? "起点" : l.hop + " 跳", l.new_nodes, maxNew, i === 0 ? "" : "")
+      ).join("");
+      document.getElementById("newMeta").textContent = "峰值 " + C.fmt(maxNew) + " / 层";
+
+      // 累计覆盖条以所在连通分量大小为满刻度，直观看出相对分量的覆盖比例。
+      const scale = Math.max(r.component_size, 1);
+      const cumBox = document.getElementById("cumChart");
+      cumBox.innerHTML = layers.map((l) =>
+        barRow(l.hop === 0 ? "起点" : l.hop + " 跳", l.cumulative, scale, "", " / " + C.fmt(r.component_size))
+      ).join("");
+      const finalPct = scale ? (r.reachable_within_hops / scale * 100).toFixed(1) : 0;
+      document.getElementById("cumMeta").textContent = finalPct + "% 分量";
+    }
+
+    function renderTable(r) {
+      const layers = r.layers;
+      let rows = layers.map((l) => {
+        const share = r.total_nodes ? (l.cumulative / r.total_nodes * 100).toFixed(1) : "0.0";
+        return "<tr>" +
+          '<td class="num">' + l.hop + "</td>" +
+          '<td class="num">' + C.fmt(l.new_nodes) + "</td>" +
+          '<td class="num">' + C.fmt(l.cumulative) + "</td>" +
+          '<td class="num">' + share + "%</td>" +
+          "</tr>";
+      }).join("");
+      if (r.truncated) {
+        rows += '<tr style="color:var(--warning)">' +
+          '<td class="num">≥ ' + (r.max_hops + 1) + "</td>" +
+          '<td colspan="3" class="num">尚有 ' + C.fmt(r.unreachable_within_hops) + " 个节点在跳数上限之外（分量内最远 " + r.eccentricity + ' 跳）</td></tr>';
+      }
+      document.getElementById("layerTable").innerHTML =
+        '<div class="table-wrap"><table class="table"><thead><tr>' +
+        "<th>跳数</th><th class=\"num\">本跳新增</th><th class=\"num\">累计覆盖</th><th class=\"num\">占全图</th>" +
+        "</tr></thead><tbody>" + rows + "</tbody></table></div>";
+      document.getElementById("layerMeta").textContent =
+        "共 " + layers.length + " 层（0–" + r.hops_explored + " 跳）";
+    }
+
+    function renderLayerNodes(r) {
+      const box = document.getElementById("layerNodes");
+      box.innerHTML = r.layers.map((l) => {
+        const chips = l.nodes.map((n) =>
+          '<span class="node-chip"><span class="nid">#' + n.id + '</span><span class="nname">' +
+          C.escapeHtml(n.name || String(n.id)) + "</span></span>"
+        ).join("");
+        const more = l.nodes_truncated > 0
+          ? '<span class="more-chip">… 另有 ' + C.fmt(l.nodes_truncated) + " 个未展示</span>"
+          : "";
+        return '<div style="margin-bottom:14px">' +
+          '<div class="small muted mb-8"><strong>' + (l.hop === 0 ? "第 0 跳（起点）" : "第 " + l.hop + " 跳") +
+          '</strong> · 新增 ' + C.fmt(l.new_nodes) + " · 累计 " + C.fmt(l.cumulative) + "</div>" +
+          '<div class="layer-nodes">' + (chips || '<span class="more-chip">（无）</span>') + more + "</div></div>";
+      }).join("");
+    }
+
+    C.initPage("reach", function () {
+      document.getElementById("btnQuery").addEventListener("click", query);
+      document.getElementById("src").addEventListener("keyup", (e) => { if (e.key === "Enter") query(); });
+      document.getElementById("hops").addEventListener("keyup", (e) => { if (e.key === "Enter") query(); });
+      // 默认示例
+      document.getElementById("src").value = 1;
+      document.getElementById("hops").value = 3;
+      query();
+    });
+  </script>
+</body>
+</html>

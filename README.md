@@ -1,10 +1,10 @@
 # 社交网络图分析与推荐系统
 
 一个 **零第三方依赖**（Python 后端纯标准库，前端仅引 vis.js CDN）的社交网络图分析
-与推荐系统。前端 10 个页面覆盖用户管理、关系导入、图可视化、路径与共同好友、
-社群发现、个性化推荐、统计面板、系统设置、数据导出与标签管理；后端实现邻接表图
-构建、BFS 最短路径、PageRank、Louvain 社群划分，以及协同过滤 + 图嵌入 + 标签的
-混合推荐。
+与推荐系统。前端 11 个页面覆盖用户管理、关系导入、图可视化、路径与共同好友、
+逐层可达性分析、社群发现、个性化推荐、统计面板、系统设置、数据导出与标签管理；
+后端实现邻接表图构建、BFS 最短路径、逐层 BFS 可达性统计、PageRank、Louvain
+社群划分，以及协同过滤 + 图嵌入 + 标签的混合推荐。
 
 ---
 
@@ -44,7 +44,7 @@ gsb3/
 ├── backend/                    # Python 后端（纯标准库）
 │   ├── config.py               # 配置、设置存储、路径、原子写工具
 │   ├── graph.py                # 内存高效 CSR 图（邻接表冻结为压缩数组）
-│   ├── algorithms.py           # BFS/双向BFS、PageRank、Louvain、推荐算法
+│   ├── algorithms.py           # BFS/双向BFS、逐层BFS可达性、PageRank、Louvain、推荐算法
 │   ├── storage.py              # 分片 JSON 邻接表存储、索引、增量合并
 │   ├── service.py              # 业务服务层（缓存、CRUD、算法调度）
 │   ├── api.py                  # HTTP 服务 + REST 路由 + 静态托管
@@ -56,12 +56,13 @@ gsb3/
 │   ├── import.html             # 2. 关系导入
 │   ├── graph.html              # 3. 图可视化（vis.js 缩放拖拽、路径高亮）
 │   ├── path.html               # 4. 最短路径与共同好友查询
-│   ├── community.html          # 5. 社群发现（Louvain 着色）
-│   ├── recommend.html          # 6. 个性化推荐列表
-│   ├── stats.html              # 7. 统计面板
-│   ├── settings.html           # 8. 系统设置
-│   ├── export.html             # 9. 数据导出
-│   ├── tags.html               # 10. 标签管理
+│   ├── reach.html              # 5. 可达性分析（逐层 BFS 新增/累计覆盖条形图）
+│   ├── community.html          # 6. 社群发现（Louvain 着色）
+│   ├── recommend.html          # 7. 个性化推荐列表
+│   ├── stats.html              # 8. 统计面板
+│   ├── settings.html           # 9. 系统设置
+│   ├── export.html             # 10. 数据导出
+│   ├── tags.html               # 11. 标签管理
 │   ├── css/style.css           # 设计系统（明暗双主题）
 │   └── js/                     # api.js（客户端）+ common.js（外壳/工具）
 └── data/                       # 运行期生成（分片图、画像、推荐、社群…）
@@ -103,6 +104,7 @@ gsb3/
 | 算法 | 实现要点 |
 | --- | --- |
 | 最短路径 | 经典 BFS + **双向 BFS**（大图自动切换，搜索面 O(b^(d/2))） |
+| 可达性分析 | **逐层 BFS** 一次遍历整个连通分量并缓存；节点按最短距离严格分层、每层排序去重，统计视图按跳数上限纯函数派生，新增/累计计数准确、结果可复现 |
 | PageRank | 幂迭代，显式处理 dangling 节点，O(n) 内存，L1 收敛判定 |
 | Louvain | 两阶段模块度优化：局部移动（ΔQ 增量公式）+ 聚合，迭代至收敛，固定种子可复现，`min_improvement` 早停 |
 | 协同过滤 | 朋友的朋友 + Adamic-Adar 权重去偏，仅依赖邻域规模 |
@@ -131,6 +133,7 @@ gsb3/
 | POST | `/api/import` | 批量导入边 |
 | GET | `/api/graph` · `/api/graph/neighborhood` | 全图 / 邻域子图 |
 | GET | `/api/path` · `/api/common-friends` | 最短路径 / 共同好友 |
+| GET | `/api/reachability?source=&hops=` | 逐层 BFS 可达性统计（新增/累计/连通性） |
 | GET/POST | `/api/community` · `/api/community/compute` | Louvain 结果 / 重算 |
 | GET | `/api/pagerank?top=` | PageRank 中心性 |
 | GET/POST | `/api/recommend/<id>` · `/api/recommend` | 单用户 / 批量推荐 |

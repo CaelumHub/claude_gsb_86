@@ -26,6 +26,7 @@ try:
     from . import algorithms, config, storage
     from .algorithms import (
         adamic_adar,
+        bfs_component_layers,
         bidirectional_shortest_path,
         bfs_shortest_path,
         common_friends,
@@ -33,6 +34,7 @@ try:
         jaccard_similarity,
         louvain,
         pagerank,
+        reachability_summary,
         shortest_path,
     )
     from .graph import Graph
@@ -43,6 +45,7 @@ except ImportError:  # pragma: no cover
     import storage
     from algorithms import (  # type: ignore
         adamic_adar,
+        bfs_component_layers,
         bidirectional_shortest_path,
         bfs_shortest_path,
         common_friends,
@@ -50,6 +53,7 @@ except ImportError:  # pragma: no cover
         jaccard_similarity,
         louvain,
         pagerank,
+        reachability_summary,
         shortest_path,
     )
     from graph import Graph
@@ -73,6 +77,8 @@ class SocialGraphService:
         self._rec_cache: Dict[int, dict] = self.derived.load_recommendations()
         self._community_dirty = False
         self._pagerank_dirty = False
+        # Full per-source BFS layering, reused to derive bounded hop views.
+        self._reach_cache: Dict[int, dict] = {}
 
     # ------------------------------------------------------------------
     # Graph access / caching
@@ -86,6 +92,7 @@ class SocialGraphService:
                 # Graph changed -> derived results are stale.
                 self._community_dirty = True
                 self._pagerank_dirty = True
+                self._reach_cache.clear()
             return self._graph
 
     def invalidate_graph(self) -> None:
@@ -94,6 +101,7 @@ class SocialGraphService:
             self._graph_dirty = True
             self._community_dirty = False
             self._pagerank_dirty = True
+            self._reach_cache.clear()
 
     def graph_stats(self) -> dict:
         graph = self.get_graph()
@@ -345,6 +353,63 @@ class SocialGraphService:
             "jaccard": round(jaccard_similarity(graph, u, v), 6),
             "adamic_adar": round(adamic_adar(graph, u, v), 6),
         }
+
+    # ------------------------------------------------------------------
+    # Reachability analysis (layered BFS fan-out)
+    # ------------------------------------------------------------------
+    def _component_layers(self, source: int) -> Optional[dict]:
+        """Return the cached full BFS layering of ``source``'s component."""
+        with self._lock:
+            component = self._reach_cache.get(source)
+            if component is not None:
+                # Defensive: drop a stale cache entry if the graph shrank.
+                if component.get("component_size", 0) <= self.get_graph().node_count:
+                    return component
+                self._reach_cache.pop(source, None)
+            graph = self.get_graph()
+            if not graph.has_node(source):
+                return None
+            component = bfs_component_layers(graph, source)
+            self._reach_cache[source] = component
+            return component
+
+    def reachability(self, source: int, max_hops: int) -> dict:
+        """Reusable per-hop reachability stats for ``source`` within ``max_hops``.
+
+        Traversal (full component BFS, cached) and the bounded statistics view
+        are separate: changing the hop cap never re-walks the graph.
+        """
+        max_hops = min(
+            max(int(max_hops), 1), config.REACHABILITY_MAX_HOPS
+        )
+        graph = self.get_graph()
+        if not graph.has_node(source):
+            return {
+                "found": False,
+                "source": source,
+                "error": "用户不存在",
+            }
+
+        component = self._component_layers(source)
+        with config.Timed() as timer:
+            result = reachability_summary(
+                component,
+                max_hops=max_hops,
+                total_nodes=graph.node_count,
+            )
+        result["time_ms"] = round(timer.elapsed_ms, 2)
+
+        users = self.store.load_users()
+        for layer in result["layers"]:
+            layer["nodes"] = [
+                {
+                    "id": nid,
+                    "name": users.get(nid, {}).get("name", str(nid)),
+                }
+                for nid in layer["nodes"]
+            ]
+        result["source_name"] = users.get(source, {}).get("name", str(source))
+        return result
 
     # ------------------------------------------------------------------
     # Community / pagerank (cached)

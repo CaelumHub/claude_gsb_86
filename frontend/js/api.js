@@ -76,6 +76,8 @@
       request("GET", "/api/path" + qs({ source, target, algorithm })),
     commonFriends: (source, target) =>
       request("GET", "/api/common-friends" + qs({ source, target })),
+    reachability: (source, hops) =>
+      request("GET", "/api/reachability" + qs({ source, hops })),
 
     // 社群 / PageRank
     community: () => request("GET", "/api/community"),

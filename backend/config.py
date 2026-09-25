@@ -89,6 +89,11 @@ COMMUNITY_READ_DIRECT = True
 
 BFS_MAX_DEPTH = 64                        # safety bound on unweighted BFS
 
+# Reachability analysis (layered BFS fan-out / hop coverage)
+REACHABILITY_DEFAULT_HOPS = 3
+REACHABILITY_MAX_HOPS = 12
+REACHABILITY_LAYER_NODE_LIMIT = 200       # per-layer node ids sent to the UI
+
 # Recommendation
 RECOMMEND_DEFAULT_K = 10
 RECOMMEND_MAX_K = 50

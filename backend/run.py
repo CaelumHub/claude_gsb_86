@@ -57,7 +57,38 @@ def _check() -> int:
     rec = algorithms.hybrid_recommend(g, 1, k=3)
     assert "items" in rec
 
-    print("[check] OK: graph, bfs, pagerank, louvain, recommend all pass")
+    # --- reachability: layered BFS fan-out -------------------------------
+    comp = algorithms.bfs_component_layers(g, 1)
+    assert comp["found"]
+    assert [len(layer) for layer in comp["layers"]] == [1, 2, 1, 2], comp["layers"]
+    assert comp["component_size"] == 6 and comp["eccentricity"] == 3
+
+    view = algorithms.reachability_summary(comp, max_hops=2, total_nodes=6)
+    assert [l["new_nodes"] for l in view["layers"]] == [1, 2, 1]
+    assert [l["cumulative"] for l in view["layers"]] == [1, 3, 4]
+    assert view["reachable_within_hops"] == 4
+    assert view["unreachable_within_hops"] == 2
+    assert view["truncated"] is True
+    assert view["disconnected"] is False
+
+    full_view = algorithms.reachability_summary(comp, max_hops=10, total_nodes=6)
+    assert full_view["reachable_within_hops"] == 6
+    assert full_view["truncated"] is False
+    assert [l["cumulative"] for l in full_view["layers"]][-1] == 6
+
+    # Disconnected graph: an extra isolated component must be flagged.
+    g2 = Graph(directed=False)
+    g2.add_edge(1, 2)
+    g2.add_edge(7, 8)
+    g2.freeze()
+    comp2 = algorithms.bfs_component_layers(g2, 1)
+    view2 = algorithms.reachability_summary(comp2, max_hops=5, total_nodes=4)
+    assert view2["disconnected"] is True
+    assert view2["reachable_total"] == 2
+    assert view2["unreachable_total"] == 2
+    assert algorithms.bfs_component_layers(g2, 99) == {"found": False}
+
+    print("[check] OK: graph, bfs, pagerank, louvain, recommend, reachability all pass")
     return 0
 
 

@@ -5,6 +5,8 @@ Graph algorithms implemented for **memory-efficient, large-scale execution**.
 
 * ``bfs_shortest_path``          -- classic unweighted BFS with parent tracking
 * ``bidirectional_shortest_path`` -- meets-in-the-middle, much faster on big graphs
+* ``bfs_component_layers``       -- layered BFS fan-out over a connected component
+* ``reachability_summary``       -- pure per-hop new/cumulative stats view
 * ``pagerank``                   -- power iteration over CSR with dangling-node fix
 * ``louvain``                    -- two-phase modularity optimisation w/ early stop
 * ``recommend_*``                -- collaborative filtering + embedding + cold start
@@ -172,6 +174,123 @@ def shortest_path(
         return path, dist, "bidirectional"
     path, dist = bfs_shortest_path(graph, source, target)
     return path, dist, "bfs"
+
+
+# ===========================================================================
+# Reachability analysis (layered BFS fan-out)
+# ===========================================================================
+def bfs_component_layers(graph: Graph, source: int) -> Dict[str, object]:
+    """Layered BFS over the whole connected component of ``source``.
+
+    This is the *traversal* half of reachability analysis, intentionally kept
+    independent of any hop cap or presentation concern: callers (and caches)
+    can reuse the full layering to derive many bounded views cheaply.
+
+    Nodes are discovered front by front, so every node ends up in exactly one
+    layer (its shortest-path distance from ``source``); neighbour lists of the
+    frozen graph are sorted, hence the output is stable and reproducible.
+
+    Returns ``{"found": False}`` when ``source`` is not in the graph; otherwise
+    a dict with ``layers`` (list of sorted node lists, layer 0 = source),
+    ``component_size`` and ``eccentricity`` (largest distance in component).
+    """
+    if not graph.has_node(source):
+        return {"found": False}
+
+    visited: Set[int] = {source}
+    frontier = [source]
+    layers: List[List[int]] = [[source]]
+
+    while frontier:
+        next_frontier: Set[int] = set()
+        for node in frontier:
+            for nb in graph.neighbors(node):
+                if nb not in visited:
+                    visited.add(nb)
+                    next_frontier.add(nb)
+        if not next_frontier:
+            break
+        # Sorting each front makes the result deterministic regardless of the
+        # order edges were inserted.
+        frontier = sorted(next_frontier)
+        layers.append(frontier)
+
+    return {
+        "found": True,
+        "source": source,
+        "layers": layers,
+        "component_size": len(visited),
+        "eccentricity": len(layers) - 1,
+    }
+
+
+def reachability_summary(
+    component: Dict[str, object],
+    max_hops: int,
+    total_nodes: int,
+    layer_node_limit: int = config.REACHABILITY_LAYER_NODE_LIMIT,
+) -> Dict[str, object]:
+    """Derive a bounded, presentation-ready reachability view.
+
+    This is the *statistics/presentation* half: it takes the reusable output of
+    :func:`bfs_component_layers` and a hop cap, and produces per-hop new-node
+    counts, cumulative coverage and connectivity diagnostics without touching
+    the graph.  Pure function, so identical inputs always yield identical
+    output.
+
+    Counts always derive from the full layers (not the truncated sample lists),
+    so each node is counted in exactly one layer and the cumulative total is
+    exact.
+    """
+    if not component.get("found"):
+        return {"found": False}
+
+    max_hops = max(0, int(max_hops))
+    full_layers: List[List[int]] = component["layers"]
+    eccentricity: int = component["eccentricity"]
+    component_size: int = component["component_size"]
+    source: int = component["source"]
+
+    # Per-hop stats up to the cap; layers beyond the cap are only reachable
+    # with more hops, never within it.
+    layers_out: List[Dict[str, object]] = []
+    cumulative = 0
+    for hop in range(0, min(max_hops, eccentricity) + 1):
+        nodes = full_layers[hop]
+        cumulative += len(nodes)
+        sample = nodes[:layer_node_limit]
+        layers_out.append({
+            "hop": hop,
+            "new_nodes": len(nodes),
+            "cumulative": cumulative,
+            "nodes": sample,
+            "nodes_truncated": len(nodes) - len(sample),
+        })
+
+    truncated = max_hops < eccentricity
+    reachable_within_hops = cumulative
+    unreachable_within_hops = component_size - cumulative
+    component_covers_all = component_size >= total_nodes
+
+    return {
+        "found": True,
+        "source": source,
+        "max_hops": max_hops,
+        "total_nodes": total_nodes,
+        "layers": layers_out,
+        "reachable_within_hops": reachable_within_hops,
+        "reachable_total": component_size,
+        "unreachable_within_hops": unreachable_within_hops,
+        "unreachable_total": total_nodes - component_size,
+        "component_size": component_size,
+        "eccentricity": eccentricity,
+        "hops_explored": len(layers_out) - 1,
+        # Still more of *this* component beyond the hop cap.
+        "truncated": truncated,
+        # The component does not span the whole graph.
+        "disconnected": not component_covers_all,
+        "connected": component_covers_all,
+    }
 
 
 # ===========================================================================
